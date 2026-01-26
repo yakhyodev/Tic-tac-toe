@@ -450,7 +450,10 @@ async def finish_game(bot: Bot, game_id, technical_loss_uid=None):
                 rank = 99
             final_ranks.append({'user_id': g['players'][s]['id'], 'rank': rank, 'is_draw': is_true_draw})
 
-        results_summary = db.process_game_results(game_id, final_ranks)
+    # Bazaga natijalarni yozish
+    results_summary = db.process_game_results(game_id, final_ranks)
+    
+    if not technical_loss_uid:
         summary_text = f"🏁 **O'YIN YAKUNLANDI!**\n\n🏆 **NATIJALAR:**\n"
         for res in results_summary:
             name = next(g['players'][s]['name'] for s in g['symbols'] if g['players'][s]['id'] == res['user_id'])
@@ -469,6 +472,44 @@ async def finish_game(bot: Bot, game_id, technical_loss_uid=None):
             await bot.edit_message_text(chat_id=cid, message_id=mid, text=summary_text, reply_markup=final_markup)
         except Exception:
             pass
+
+    # --- YANGI QISM: FOYDALANUVCHILAGA LICHKADA XABAR YUBORISH ---
+    for res in results_summary:
+        user_id = res['user_id']
+        if user_id < 0:
+            continue # Robotlarni o'tkazib yuboramiz
+
+        # Foydalanuvchi profilini olish
+        profile = db.get_user_profile(user_id)
+        if not profile:
+            continue
+
+        # Status va xabarni tayyorlash
+        if res['is_draw']:
+            status_desc = "🤝 O'yin durrang bilan yakunlandi!"
+        elif res['rank'] == 1:
+            status_desc = "🏆 G'alaba! Siz o'yinda yutdingiz!"
+        else:
+            status_desc = "❌ Afsuski, bu safar mag'lub bo'ldingiz."
+
+        active_skin_id = profile.get('active_skin', 'default')
+        active_skin_emoji = next((s['symbol'] for s in SHOP_SKINS if s['id'] == active_skin_id), "⬜️")
+
+        private_msg_text = (
+            f"🏁 **O'YIN YAKUNLANDI!**\n\n"
+            f"{status_desc}\n"
+            f"💰 **Sizning mukofotingiz:** {res['reward']:,} so'm\n"
+            f"🎭 **Sizning skiningiz:** {active_skin_emoji} ({active_skin_id})\n\n"
+            f"🛒 Skin sotib olish uchun /shop buyrug'idan foydalaning.\n"
+            f"🎨 Boshqa skin tanlash uchun /skinlar buyrug'idan foydalaning."
+        )
+
+        try:
+            # Botga start bosgan bo'lsa xabar boradi, bo'lmasa xatolik bermaydi
+            await bot.send_message(chat_id=user_id, text=private_msg_text)
+        except Exception:
+            pass
+    # --- YANGI QISM TUGADI ---
             
     if game_id in games:
         del games[game_id]
