@@ -1,4 +1,30 @@
+# Secrets and local environment
 .env
+.env.*
+!.env.example
+
+# Python
 venv/
+.venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+
+# Railway CLI local metadata
+.railway/

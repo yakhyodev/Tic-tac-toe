@@ -1,106 +1,157 @@
+"""Telegramdan mustaqil Tic-Tac-Toe o'yin qoidalari.
+
+Doska UI emojilarini emas, o'yinchi slotlarini (``p0``, ``p1``...) saqlaydi.
+Bu skinni almashtirish o'yin natijasiga ta'sir qilmasligini ta'minlaydi.
+"""
+
+from __future__ import annotations
+
 import random
+from collections.abc import Iterable
 
-# --- BO'LIM 1: G'OLIBNI ANIQLASH ---
+EMPTY = None
 
-def check_winner(board, size, win_len):
-    """
-    Funksiya 1.1.1: G'olibni qidirish algoritmi.
-    Tic-Tac-Toe mantiig'i bo'yicha qator, ustun va diagonallarni tekshiradi.
-    """
-    # 1. Qatorlar bo'yicha tekshirish
-    for r in range(size):
-        for c in range(size - win_len + 1):
-            window = [board[r][c + i] for i in range(win_len)]
-            # Agar barcha belgilar bir xil bo'lsa va bo'sh yoki muzlatilgan bo'lmasa
-            if len(set(window)) == 1 and window[0] not in [' ', '✅']:
-                return window[0]
 
-    # 2. Ustunlar bo'yicha tekshirish
-    for r in range(size - win_len + 1):
-        for c in range(size):
-            window = [board[r + i][c] for i in range(win_len)]
-            if len(set(window)) == 1 and window[0] not in [' ', '✅']:
-                return window[0]
+def get_empty_cells(board: list[list[str | None]], size: int | None = None) -> list[tuple[int, int]]:
+    board_size = size or len(board)
+    return [(row, column) for row in range(board_size) for column in range(board_size) if board[row][column] is EMPTY]
 
-    # 3. Diagonallar bo'yicha tekshirish
-    for r in range(size - win_len + 1):
-        for c in range(size - win_len + 1):
-            # Asosiy diagonal \
-            diag1 = [board[r + i][c + i] for i in range(win_len)]
-            if len(set(diag1)) == 1 and diag1[0] not in [' ', '✅']:
-                return diag1[0]
-            
-            # Teskari diagonal /
-            diag2 = [board[r + i][c + win_len - 1 - i] for i in range(win_len)]
-            if len(set(diag2)) == 1 and diag2[0] not in [' ', '✅']:
-                return diag2[0]
 
-    # 4. Durrang tekshiruvi (Barcha kataklar to'lgan bo'lsa)
-    if all(cell != ' ' for row in board for cell in row):
-        return 'Draw'
-    
-    return None
+def _count_direction(
+    board: list[list[str | None]],
+    row: int,
+    column: int,
+    row_step: int,
+    column_step: int,
+    player_slot: str,
+) -> int:
+    size = len(board)
+    count = 0
+    row += row_step
+    column += column_step
+    while 0 <= row < size and 0 <= column < size and board[row][column] == player_slot:
+        count += 1
+        row += row_step
+        column += column_step
+    return count
 
-def get_empty_cells(board, size):
-    """Funksiya 1.2.1: Barcha bo'sh kataklar koordinatalarini qaytaradi."""
-    return [(r, c) for r in range(size) for c in range(size) if board[r][c] == ' ']
 
-# --- BO'LIM 2: ROBOT INTELLEKTI (MEDIUM AI) ---
+def is_winning_move(
+    board: list[list[str | None]],
+    row: int,
+    column: int,
+    player_slot: str,
+    win_length: int,
+) -> bool:
+    """Faqat oxirgi yurish yaratgan chiziqni tekshiradi."""
+    if board[row][column] != player_slot:
+        return False
 
-def get_robot_move(board, size, win_len, robot_symbol):
-    """
-    Robot mantiig'i:
-    1. Yutish imkonini qidiradi (G'alaba yurishi).
-    2. Raqibni bloklaydi (Barcha raqib skinlarini hisobga oladi).
-    3. Strategik markazni egallashga harakat qiladi.
-    4. Tasodifiy yurish.
-    """
+    for row_step, column_step in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        length = 1
+        length += _count_direction(board, row, column, row_step, column_step, player_slot)
+        length += _count_direction(board, row, column, -row_step, -column_step, player_slot)
+        if length >= win_length:
+            return True
+    return False
+
+
+def check_winner(
+    board: list[list[str | None]],
+    size: int,
+    win_len: int,
+) -> str | None:
+    """Moslik uchun umumiy tekshiruv; yangi oqim ``is_winning_move``dan foydalanadi."""
+    for row in range(size):
+        for column in range(size):
+            slot = board[row][column]
+            if slot is not EMPTY and is_winning_move(board, row, column, slot, win_len):
+                return slot
+    return "Draw" if not get_empty_cells(board, size) else None
+
+
+def is_board_full(board: list[list[str | None]]) -> bool:
+    return not any(cell is EMPTY for row in board for cell in row)
+
+
+def _would_win(
+    board: list[list[str | None]],
+    row: int,
+    column: int,
+    slot: str,
+    win_length: int,
+) -> bool:
+    board[row][column] = slot
+    try:
+        return is_winning_move(board, row, column, slot, win_length)
+    finally:
+        board[row][column] = EMPTY
+
+
+def get_robot_move(
+    board: list[list[str | None]],
+    size: int,
+    win_len: int,
+    robot_symbol: str,
+    active_opponents: Iterable[str] | None = None,
+) -> tuple[int, int] | None:
+    """Yutish, raqibni bloklash, markaz va tasodifiy yurish strategiyasi."""
     empty_cells = get_empty_cells(board, size)
     if not empty_cells:
         return None
 
-    # 2.1.1. O'zining g'alaba yurishini tekshirish
-    for r, c in empty_cells:
-        board[r][c] = robot_symbol
-        if check_winner(board, size, win_len) == robot_symbol:
-            board[r][c] = ' ' 
-            return r, c
-        board[r][c] = ' '
+    for row, column in empty_cells:
+        if _would_win(board, row, column, robot_symbol, win_len):
+            return row, column
 
-    # 2.1.2. Raqiblarni bloklash (Multiplayer/Battle rejimi uchun)
-    opponent_symbols = set()
-    for row in board:
-        for cell in row:
-            if cell not in [' ', '✅', robot_symbol]:
-                opponent_symbols.add(cell)
+    opponents = set(active_opponents or ())
+    if not opponents:
+        opponents = {cell for board_row in board for cell in board_row if cell is not EMPTY and cell != robot_symbol}
 
-    for opp in opponent_symbols:
-        for r, c in empty_cells:
-            board[r][c] = opp
-            if check_winner(board, size, win_len) == opp:
-                board[r][c] = ' '
-                return r, c
-            board[r][c] = ' '
+    for opponent in opponents:
+        if opponent == robot_symbol:
+            continue
+        for row, column in empty_cells:
+            if _would_win(board, row, column, opponent, win_len):
+                return row, column
 
-    # 2.1.3. Markaziy katak strategiyasi
     center = size // 2
     if (center, center) in empty_cells:
         return center, center
 
-    # 2.1.4. Tasodifiy yurish
-    return random.choice(empty_cells)
+    corners = [cell for cell in ((0, 0), (0, size - 1), (size - 1, 0), (size - 1, size - 1)) if cell in empty_cells]
+    return random.choice(corners or empty_cells)
 
-# --- BO'LIM 3: O'YIN HOLATI ---
 
-def is_game_over(board, active_players_count):
-    """
-    Funksiya 3.1.1: O'yin tugash shartlarini tekshiradi.
-    Faqat bitta o'yinchi qolganda yoki doska to'lganda o'yin tugaydi.
-    """
-    if active_players_count <= 1:
-        return True
-    
-    if all(cell != ' ' for row in board for cell in row):
-        return True
-        
-    return False
+def is_game_over(board: list[list[str | None]], active_players_count: int) -> bool:
+    return active_players_count <= 1 or is_board_full(board)
+
+
+def next_available_rank(placements: dict[str, int], player_count: int) -> int:
+    used = set(placements.values())
+    return next(rank for rank in range(1, player_count + 1) if rank not in used)
+
+
+def apply_timeout(
+    slots: list[str],
+    placements: dict[str, int],
+    timed_out_slot: str,
+) -> dict[str, int]:
+    """Taymaut qilgan o'yinchiga eng past bo'sh o'rinni atomar modelda beradi."""
+    if timed_out_slot in placements:
+        return placements
+    used = set(placements.values())
+    lowest_available = next(rank for rank in range(len(slots), 0, -1) if rank not in used)
+    placements[timed_out_slot] = lowest_available
+    return placements
+
+
+def finalize_placements(
+    slots: list[str],
+    placements: dict[str, int],
+) -> dict[str, int]:
+    """Bitta faol o'yinchi qolsa unga eng yuqori bo'sh o'rinni beradi."""
+    remaining = [slot for slot in slots if slot not in placements]
+    if len(remaining) == 1:
+        placements[remaining[0]] = next_available_rank(placements, len(slots))
+    return placements
