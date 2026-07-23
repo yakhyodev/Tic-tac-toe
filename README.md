@@ -6,9 +6,10 @@ Aiogram 3, aiohttp va PostgreSQL asosidagi Classic/Battle Tic-Tac-Toe bot.
 
 - 2 kishilik 3×3 Classic va 3 kishilik 5×5 Battle
 - Shaxsiy matchmaking, guruh o'yinlari va robotlar
+- Guruh o'yiniga private-chat deep-link orqali xavfsiz qo'shilish va aynan o'yin xabariga qaytish
 - 45 soniyalik taymaut, `/cancel` va kutilayotgan o'yin TTL'i
 - Restartdan keyin ochiq o'yinlarni PostgreSQL'dan tiklash
-- Reyting, referral, wallet ledger, atomar shop va premium skin muddati
+- Reyting, referral, yagona o'yin puli, atomar shop va premium skin muddati
 - Telegram webhook secret tekshiruvi
 - Railway health/readiness endpointlari
 
@@ -55,6 +56,9 @@ LOG_LEVEL=INFO
 ```
 
 `PORT` Railway tomonidan avtomatik beriladi. `railway.toml` Docker build, migration, start command, bitta replica, healthcheck va restart policy'ni boshqaradi.
+
+`002_remove_coins.sql` eski monetalarni 1:1 000 kursda o'yin puliga qaytarib, moneta ustunini olib tashlaydi. Barcha
+skinlar faqat o'yinda ishlab topilgan balansdan xarid qilinadi.
 
 Deploydan keyin tekshiring:
 

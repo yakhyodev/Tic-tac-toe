@@ -8,7 +8,7 @@ from aiogram import Bot, F, Router, types
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from config import MONEY_RATE, REFERRAL_BONUS, SHOP_SKINS
+from config import REFERRAL_BONUS, SHOP_SKINS
 from database import db
 
 router = Router(name="commands")
@@ -20,7 +20,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🎮 O'yinni boshlash")],
             [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="🎨 Skinlarim")],
-            [KeyboardButton(text="🛍 Do'kon"), KeyboardButton(text="🪙 Moneta olish")],
+            [KeyboardButton(text="🛍 Do'kon")],
             [KeyboardButton(text="🤝 Referallar"), KeyboardButton(text="🌍 Global reyting")],
         ],
         resize_keyboard=True,
@@ -37,7 +37,9 @@ def get_pm_keyboard(bot_username: str) -> InlineKeyboardMarkup:
 async def cmd_start(message: types.Message, bot: Bot) -> None:
     user = message.from_user
     args = (message.text or "").split(maxsplit=1)
-    inviter_id = int(args[1]) if len(args) == 2 and args[1].isdigit() else None
+    payload = args[1] if len(args) == 2 else ""
+    join_game_id = payload.removeprefix("join_") if payload.startswith("join_") else None
+    inviter_id = int(payload) if payload.isdigit() else None
     if inviter_id == user.id:
         inviter_id = None
     await db.register_user(user.id, user.username, user.full_name, inviter_id)
@@ -48,6 +50,18 @@ async def cmd_start(message: types.Message, bot: Bot) -> None:
             f"👋 Salom, {escape(user.full_name)}! Matchmaking va do'kon botning shaxsiy chatida ishlaydi.",
             reply_markup=get_pm_keyboard(bot_info.username),
         )
+        return
+
+    if join_game_id:
+        from handlers.game import join_group_game_from_start
+
+        result = await join_group_game_from_start(bot, user, join_game_id)
+        keyboard = None
+        if result.get("return_url"):
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="🎮 Guruhdagi o'yinga o'tish", url=result["return_url"])]]
+            )
+        await message.answer(result["message"], reply_markup=keyboard)
         return
 
     await message.answer(
@@ -68,7 +82,6 @@ async def cmd_help(message: types.Message) -> None:
         "/profile — profil\n"
         "/shop — skinlar do'koni\n"
         "/skins — inventar\n"
-        "/exchange — moneta olish\n"
         "/ref — referral havola\n"
         "/top — global reyting\n"
         "/rules — o'yin qoidalari"
@@ -169,12 +182,11 @@ async def cb_shop_category(call: types.CallbackQuery) -> None:
     for skin in SHOP_SKINS:
         if skin["type"] != category:
             continue
-        unit = "moneta" if skin["currency"] == "coin" else "so'm"
         status = " ✅" if skin["id"] in owned else ""
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    text=f"{skin['symbol']} {skin['name']} — {skin['price']:,} {unit}{status}",
+                    text=f"{skin['symbol']} {skin['name']} — {skin['price']:,} so'm{status}",
                     callback_data=f"buy:{skin['id']}",
                 )
             ]
@@ -199,34 +211,6 @@ async def cb_buy_skin(call: types.CallbackQuery) -> None:
     await call.answer(result["msg"], show_alert=True)
 
 
-@router.message(F.text == "🪙 Moneta olish")
-@router.message(Command("exchange"))
-async def cmd_exchange(message: types.Message) -> None:
-    if message.chat.type != "private":
-        await message.answer("Moneta almashtirish faqat shaxsiy chatda ishlaydi.")
-        return
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=f"1 moneta — {MONEY_RATE:,} so'm", callback_data="exchange:1")],
-            [InlineKeyboardButton(text=f"5 moneta — {5 * MONEY_RATE:,} so'm", callback_data="exchange:5")],
-            [InlineKeyboardButton(text=f"10 moneta — {10 * MONEY_RATE:,} so'm", callback_data="exchange:10")],
-        ]
-    )
-    await message.answer(
-        "<b>🪙 MONETA ALMASHTIRISH</b>\n\nBu ichki o'yin monetasi; real dollar emas.", reply_markup=keyboard
-    )
-
-
-@router.callback_query(F.data.startswith("exchange:"))
-async def cb_exchange(call: types.CallbackQuery) -> None:
-    coins = int(call.data.split(":", 1)[1])
-    if coins not in {1, 5, 10}:
-        await call.answer("Noto'g'ri miqdor.", show_alert=True)
-        return
-    result = await db.exchange_cash_for_coins(call.from_user.id, coins, MONEY_RATE)
-    await call.answer(result["msg"], show_alert=True)
-
-
 @router.message(F.text == "👤 Profilim")
 @router.message(Command("profile", "stat"))
 async def show_stats(message: types.Message, bot: Bot) -> None:
@@ -243,7 +227,6 @@ async def show_stats(message: types.Message, bot: Bot) -> None:
         f"<b>👤 {escape(profile['full_name'])}</b>\n\n"
         f"🏅 Reyting: <b>{profile['rating_points']}</b>\n"
         f"💰 O'yin puli: <b>{profile['balance']:,} so'm</b>\n"
-        f"🪙 Moneta: <b>{profile['coins']}</b>\n"
         f"🎨 Skin: <b>{active}</b>\n"
         f"🏆 G'alaba: <b>{profile['wins']}</b>\n"
         f"🤝 Durrang: <b>{profile['draws']}</b>\n"

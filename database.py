@@ -133,7 +133,7 @@ class Database:
 
     async def get_user_profile(self, user_id: int) -> dict[str, Any] | None:
         row = await self._pool().fetchrow(
-            """SELECT u.full_name, b.balance, b.coins, b.active_skin, b.rating_points,
+            """SELECT u.full_name, b.balance, b.active_skin, b.rating_points,
                       COUNT(gr.id) FILTER (WHERE gr.rank = 1 AND gr.is_draw = FALSE) AS wins,
                       COUNT(gr.id) FILTER (WHERE gr.rank > 1 AND gr.is_draw = FALSE) AS losses,
                       COUNT(gr.id) FILTER (WHERE gr.is_draw = TRUE) AS draws
@@ -141,7 +141,7 @@ class Database:
                JOIN balances b ON b.user_id = u.id
                LEFT JOIN game_results gr ON gr.user_id = u.id
                WHERE u.id = $1
-               GROUP BY u.id, u.full_name, b.balance, b.coins, b.active_skin, b.rating_points""",
+               GROUP BY u.id, u.full_name, b.balance, b.active_skin, b.rating_points""",
             user_id,
         )
         return dict(row) if row else None
@@ -318,7 +318,7 @@ class Database:
         async with self._pool().acquire() as connection:
             async with connection.transaction():
                 profile = await connection.fetchrow(
-                    "SELECT balance, coins FROM balances WHERE user_id = $1 FOR UPDATE", user_id
+                    "SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE", user_id
                 )
                 if not profile:
                     return {"success": False, "msg": "Avval /start buyrug'ini bosing."}
@@ -328,14 +328,11 @@ class Database:
                 if owned:
                     return {"success": False, "msg": "Bu skin inventaringizda mavjud."}
 
-                currency = skin["currency"]
-                column = "coins" if currency == "coin" else "balance"
-                if int(profile[column]) < int(skin["price"]):
-                    unit = "moneta" if currency == "coin" else "o'yin puli"
-                    return {"success": False, "msg": f"{unit.capitalize()} yetarli emas."}
+                if int(profile["balance"]) < int(skin["price"]):
+                    return {"success": False, "msg": "O'yin puli yetarli emas."}
 
                 await connection.execute(
-                    f"UPDATE balances SET {column} = {column} - $1 WHERE user_id = $2",
+                    "UPDATE balances SET balance = balance - $1 WHERE user_id = $2",
                     int(skin["price"]),
                     user_id,
                 )
@@ -352,45 +349,13 @@ class Database:
                 await connection.execute(
                     """INSERT INTO wallet_transactions
                        (user_id, currency, amount, transaction_type, reference_id, idempotency_key)
-                       VALUES($1, $2, $3, 'skin_purchase', $4, $5)""",
+                       VALUES($1, 'cash', $2, 'skin_purchase', $3, $4)""",
                     user_id,
-                    currency,
                     -int(skin["price"]),
                     skin_id,
                     f"skin:{user_id}:{skin_id}:{uuid.uuid4()}",
                 )
         return {"success": True, "msg": f"{skin['symbol']} {skin['name']} sotib olindi."}
-
-    async def exchange_cash_for_coins(self, user_id: int, coins: int, rate: int) -> dict[str, Any]:
-        if coins <= 0:
-            return {"success": False, "msg": "Noto'g'ri miqdor."}
-        cash = coins * rate
-        reference = f"exchange:{user_id}:{datetime.now(UTC).isoformat()}"
-        async with self._pool().acquire() as connection:
-            async with connection.transaction():
-                balance = await connection.fetchval(
-                    "SELECT balance FROM balances WHERE user_id = $1 FOR UPDATE", user_id
-                )
-                if balance is None:
-                    return {"success": False, "msg": "Avval /start buyrug'ini bosing."}
-                if int(balance) < cash:
-                    return {"success": False, "msg": "O'yin puli yetarli emas."}
-                await connection.execute(
-                    "UPDATE balances SET balance = balance - $1, coins = coins + $2 WHERE user_id = $3",
-                    cash,
-                    coins,
-                    user_id,
-                )
-                await connection.executemany(
-                    """INSERT INTO wallet_transactions
-                       (user_id, currency, amount, transaction_type, reference_id, idempotency_key)
-                       VALUES($1, $2, $3, 'exchange', $4, $5)""",
-                    [
-                        (user_id, "cash", -cash, reference, f"{reference}:cash"),
-                        (user_id, "coin", coins, reference, f"{reference}:coin"),
-                    ],
-                )
-        return {"success": True, "msg": f"{cash:,} so'm → {coins} moneta almashtirildi."}
 
     async def set_active_skin(self, user_id: int, skin_id: str) -> bool:
         await self.check_and_clean_expired_skins(user_id)
@@ -405,7 +370,7 @@ class Database:
 
     async def get_global_top(self, limit: int = 35) -> list[dict[str, Any]]:
         rows = await self._pool().fetch(
-            """SELECT u.full_name, b.rating_points, b.balance, b.coins
+            """SELECT u.full_name, b.rating_points, b.balance
                FROM users u JOIN balances b ON b.user_id = u.id
                WHERE u.is_robot = FALSE
                ORDER BY b.rating_points DESC, b.balance DESC LIMIT $1""",
