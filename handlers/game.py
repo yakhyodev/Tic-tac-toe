@@ -65,6 +65,33 @@ def _queued_user(user_id: int) -> bool:
     return any(any(item["id"] == user_id for item in queue) for queue in matchmaking_queue.values())
 
 
+def _group_message_url(group_id: int, message_id: int, username: str | None = None) -> str | None:
+    """Public yoki private superguruhdagi aynan bitta xabarga havola."""
+    if username:
+        return f"https://t.me/{username.lstrip('@')}/{message_id}"
+    raw_id = str(group_id)
+    if raw_id.startswith("-100"):
+        return f"https://t.me/c/{raw_id[4:]}/{message_id}"
+    return None
+
+
+async def _group_return_url(bot: Bot, game: dict[str, Any]) -> str | None:
+    direct_url = _group_message_url(
+        int(game["group_id"]),
+        int(game["main_msg_id"]),
+        game.get("group_username"),
+    )
+    if direct_url:
+        return direct_url
+    try:
+        chat = await bot.get_chat(game["group_id"])
+    except Exception as error:
+        logger.debug("Guruhga qaytish havolasini aniqlab bo'lmadi game=%s: %s", game["id"], error)
+        return None
+    direct_url = _group_message_url(game["group_id"], game["main_msg_id"], chat.username)
+    return direct_url or chat.invite_link
+
+
 def get_board_markup(game_id: str, disabled: bool = False) -> InlineKeyboardMarkup | None:
     game = games.get(game_id)
     if not game or "board" not in game:
@@ -164,6 +191,7 @@ async def cb_setup(call: types.CallbackQuery, bot: Bot) -> None:
         return
 
     prep_id = str(uuid.uuid4())
+    bot_info = await bot.get_me()
     game = {
         "id": prep_id,
         "status": "waiting",
@@ -174,55 +202,89 @@ async def cb_setup(call: types.CallbackQuery, bot: Bot) -> None:
         ],
         "creator_id": call.from_user.id,
         "group_id": call.message.chat.id,
+        "group_username": call.message.chat.username,
         "main_msg_id": call.message.message_id,
+        "bot_username": bot_info.username,
         "chat_name": call.message.chat.title or "Guruh",
         "created_at": time.time(),
     }
     games[prep_id] = game
     await db.save_game(prep_id, "waiting", game)
-    await _render_waiting_group(call.message, game)
+    await _render_waiting_group(bot, game)
 
 
-async def _render_waiting_group(message: types.Message, game: dict[str, Any]) -> None:
+async def _render_waiting_group(bot: Bot, game: dict[str, Any]) -> None:
     names = "\n".join(f"{index}. {escape(player['name'])}" for index, player in enumerate(game["players_list"], 1))
+    bot_username = game.get("bot_username")
+    if not bot_username:
+        bot_username = (await bot.get_me()).username
+        game["bot_username"] = bot_username
+    join_url = f"https://t.me/{bot_username}?start=join_{game['id']}"
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Qo'shilish", callback_data=f"join:{game['id']}")],
+            [InlineKeyboardButton(text="➕ Qo'shilish", url=join_url)],
             [InlineKeyboardButton(text="🤖 Robot qo'shish", callback_data=f"add_bot:{game['id']}")],
             [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel_prep:{game['id']}")],
         ]
     )
-    await message.edit_text(
+    await bot.edit_message_text(
         f"<b>🎮 {MODES[game['mode']]['name']}</b>\n\n{names}\n\nKutilmoqda…",
+        chat_id=game["group_id"],
+        message_id=game["main_msg_id"],
         reply_markup=keyboard,
     )
 
 
-@router.callback_query(F.data.startswith("join:"))
-async def cb_join(call: types.CallbackQuery, bot: Bot) -> None:
-    prep_id = call.data.split(":", 1)[1]
+async def join_group_game_from_start(bot: Bot, user: types.User, prep_id: str) -> dict[str, Any]:
+    """Deep-link orqali foydalanuvchini kutilayotgan guruh o'yiniga qo'shadi."""
+    game = games.get(prep_id)
+    return_url = await _group_return_url(bot, game) if game and game.get("status") == "waiting" else None
     async with _lock(prep_id):
         game = games.get(prep_id)
         if not game or game.get("status") != "waiting":
-            await call.answer("O'yin boshlangan yoki bekor qilingan.", show_alert=True)
-            return
-        if any(player["id"] == call.from_user.id for player in game["players_list"]):
-            await call.answer("Siz allaqachon qo'shilgansiz.", show_alert=True)
-            return
-        if _user_has_active_game(call.from_user.id) or _queued_user(call.from_user.id):
-            await call.answer("Siz boshqa o'yin yoki navbatdasiz.", show_alert=True)
-            return
-        await db.ensure_user_exists(call.from_user.id, call.from_user.full_name, call.from_user.username)
-        game["players_list"].append(
-            {"id": call.from_user.id, "name": call.from_user.full_name, "username": call.from_user.username}
-        )
-        await call.answer("Qo'shildingiz.")
+            return {
+                "success": False,
+                "message": "❌ O'yin boshlangan, bekor qilingan yoki kutish vaqti tugagan.",
+                "return_url": return_url,
+            }
+        if any(player["id"] == user.id for player in game["players_list"]):
+            return {
+                "success": True,
+                "message": "✅ Siz bu o'yinga allaqachon qo'shilgansiz. Omad!",
+                "return_url": return_url,
+            }
+        if _user_has_active_game(user.id) or _queued_user(user.id):
+            return {
+                "success": False,
+                "message": "⚠️ Sizda boshqa faol o'yin yoki matchmaking navbati mavjud.",
+                "return_url": return_url,
+            }
+
+        await db.ensure_user_exists(user.id, user.full_name, user.username)
+        game["players_list"].append({"id": user.id, "name": user.full_name, "username": user.username})
         if len(game["players_list"]) >= game["req"]:
-            await call.message.edit_text("🎮 O'yin boshlanmoqda…")
+            await bot.edit_message_text(
+                "🎮 O'yin boshlanmoqda…",
+                chat_id=game["group_id"],
+                message_id=game["main_msg_id"],
+            )
             await start_real_game(bot, prep_id=prep_id)
         else:
             await db.save_game(prep_id, "waiting", game)
-            await _render_waiting_group(call.message, game)
+            await _render_waiting_group(bot, game)
+        return {
+            "success": True,
+            "message": "✅ Siz o'yinga qo'shildingiz, omad!",
+            "return_url": return_url,
+        }
+
+
+@router.callback_query(F.data.startswith("join:"))
+async def cb_join(call: types.CallbackQuery, bot: Bot) -> None:
+    """Deploydan oldingi callback tugmalari uchun orqaga moslik."""
+    prep_id = call.data.split(":", 1)[1]
+    result = await join_group_game_from_start(bot, call.from_user, prep_id)
+    await call.answer(result["message"], show_alert=not result["success"])
 
 
 @router.callback_query(F.data.startswith("add_bot:"))
@@ -320,6 +382,9 @@ async def start_real_game(
     matchmaking_data: list[dict[str, Any]] | None = None,
     mode: str | None = None,
 ) -> None:
+    prep: dict[str, Any] | None = None
+    main_msg_id: int | None = None
+    group_username: str | None = None
     if matchmaking_data is not None:
         players_list = list(matchmaking_data)
         current_mode = mode or "classic"
@@ -334,9 +399,9 @@ async def start_real_game(
         current_mode = prep["mode"]
         is_private = False
         group_id = prep["group_id"]
+        group_username = prep.get("group_username")
+        main_msg_id = prep.get("main_msg_id")
         chat_name = prep["chat_name"]
-        await db.delete_game(prep["id"])
-        games.pop(prep["id"], None)
 
     random.shuffle(players_list)
     game_id = str(uuid.uuid4())
@@ -361,6 +426,7 @@ async def start_real_game(
         "draw_slots": [],
         "draw_type": None,
         "group_id": group_id,
+        "group_username": group_username,
         "chat_name": chat_name,
         "is_private": is_private,
         "private_chats": [],
@@ -376,11 +442,18 @@ async def start_real_game(
                 message = await bot.send_message(player["id"], f"🎮 O'yin boshlandi. Belgingiz: {player['visual']}")
                 game["private_chats"].append([player["id"], message.message_id])
     else:
-        message = await bot.send_message(group_id, "🎮 O'yin boshlanmoqda…")
-        game["main_msg_id"] = message.message_id
+        if main_msg_id:
+            game["main_msg_id"] = main_msg_id
+        else:
+            message = await bot.send_message(group_id, "🎮 O'yin boshlanmoqda…")
+            game["main_msg_id"] = message.message_id
 
     await db.save_game(game_id, "active", game)
     await update_ui(bot, game_id)
+    if prep:
+        await db.delete_game(prep["id"])
+        games.pop(prep["id"], None)
+        game_locks.pop(prep["id"], None)
     _schedule_robot_if_needed(bot, game_id)
 
 

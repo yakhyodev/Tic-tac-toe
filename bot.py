@@ -49,7 +49,6 @@ async def on_startup(bot: Bot) -> None:
         BotCommand(command="profile", description="Profil va reyting"),
         BotCommand(command="shop", description="Skinlar do'koni"),
         BotCommand(command="skins", description="Inventar"),
-        BotCommand(command="exchange", description="Moneta olish"),
         BotCommand(command="ref", description="Do'stlarni taklif qilish"),
         BotCommand(command="top", description="Global reyting"),
         BotCommand(command="rules", description="O'yin qoidalari"),

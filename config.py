@@ -83,7 +83,6 @@ class Settings:
 
 
 # Iqtisodiyot
-MONEY_RATE = 1_000
 REFERRAL_BONUS = 50_000
 STARTING_RATING = 1_000
 
@@ -114,37 +113,34 @@ REWARDS = {
 }
 
 SHOP_SKINS = [
-    {"id": "s_olma", "symbol": "🍎", "name": "Olma", "price": 5_000, "type": "simple", "currency": "cash"},
-    {"id": "s_nok", "symbol": "🍐", "name": "Nok", "price": 15_000, "type": "simple", "currency": "cash"},
-    {"id": "s_ananas", "symbol": "🍍", "name": "Ananas", "price": 50_000, "type": "simple", "currency": "cash"},
-    {"id": "p_uzum", "symbol": "🍇", "name": "Uzum Pro", "price": 5, "type": "pro", "currency": "coin"},
-    {"id": "p_olcha", "symbol": "🍒", "name": "Olcha Pro", "price": 8, "type": "pro", "currency": "coin"},
-    {"id": "p_limon", "symbol": "🍋", "name": "Limon Pro", "price": 9, "type": "pro", "currency": "coin"},
+    {"id": "s_olma", "symbol": "🍎", "name": "Olma", "price": 25_000, "type": "simple"},
+    {"id": "s_nok", "symbol": "🍐", "name": "Nok", "price": 75_000, "type": "simple"},
+    {"id": "s_ananas", "symbol": "🍍", "name": "Ananas", "price": 150_000, "type": "simple"},
+    {"id": "p_uzum", "symbol": "🍇", "name": "Uzum Pro", "price": 250_000, "type": "pro"},
+    {"id": "p_olcha", "symbol": "🍒", "name": "Olcha Pro", "price": 400_000, "type": "pro"},
+    {"id": "p_limon", "symbol": "🍋", "name": "Limon Pro", "price": 600_000, "type": "pro"},
     {
         "id": "pre_brilliant",
         "symbol": "💎",
         "name": "Brilliant VIP",
-        "price": 10,
+        "price": 900_000,
         "type": "premium",
-        "currency": "coin",
         "duration": 30,
     },
     {
         "id": "pre_yulduz",
         "symbol": "🌟",
         "name": "Yulduz VIP",
-        "price": 12,
+        "price": 1_200_000,
         "type": "premium",
-        "currency": "coin",
         "duration": 30,
     },
     {
         "id": "pre_toj",
         "symbol": "👑",
         "name": "Qirol VIP",
-        "price": 15,
+        "price": 1_500_000,
         "type": "premium",
-        "currency": "coin",
         "duration": 30,
     },
 ]
