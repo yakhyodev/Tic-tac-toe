@@ -10,6 +10,7 @@ import random
 from collections.abc import Iterable
 
 EMPTY = None
+rng = random.SystemRandom()
 
 
 def get_empty_cells(board: list[list[str | None]], size: int | None = None) -> list[tuple[int, int]]:
@@ -120,7 +121,7 @@ def get_robot_move(
         return center, center
 
     corners = [cell for cell in ((0, 0), (0, size - 1), (size - 1, 0), (size - 1, size - 1)) if cell in empty_cells]
-    return random.choice(corners or empty_cells)
+    return rng.choice(corners or empty_cells)
 
 
 def is_game_over(board: list[list[str | None]], active_players_count: int) -> bool:
