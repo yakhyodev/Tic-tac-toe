@@ -43,6 +43,7 @@ games: dict[str, dict[str, Any]] = {}
 matchmaking_queue: dict[str, list[dict[str, Any]]] = {"classic": [], "battle": []}
 queue_lock = asyncio.Lock()
 game_locks: dict[str, asyncio.Lock] = {}
+rng = random.SystemRandom()
 
 
 def _lock(game_id: str) -> asyncio.Lock:
@@ -301,7 +302,7 @@ async def cb_add_bot(call: types.CallbackQuery, bot: Bot) -> None:
         used = {player["id"] for player in game["players_list"]}
         available = [robot for robot in ROBOTS if robot["id"] not in used]
         while len(game["players_list"]) < game["req"] and available:
-            robot = random.choice(available)
+            robot = rng.choice(available)
             available.remove(robot)
             game["players_list"].append({"id": robot["id"], "name": robot["name"], "username": None})
         await call.answer()
@@ -346,7 +347,7 @@ async def handle_matchmaking(bot: Bot, user: types.User, mode: str, message_id: 
 
     while len(group) < MODES[mode]["players"]:
         used = {player["id"] for player in group}
-        robot = random.choice([robot for robot in ROBOTS if robot["id"] not in used])
+        robot = rng.choice([robot for robot in ROBOTS if robot["id"] not in used])
         group.append({"id": robot["id"], "name": robot["name"], "username": None})
     try:
         await bot.edit_message_text("🤝 Match tayyor. O'yin boshlanmoqda…", user.id, message_id)
@@ -355,25 +356,41 @@ async def handle_matchmaking(bot: Bot, user: types.User, mode: str, message_id: 
     await start_real_game(bot, matchmaking_data=group, mode=mode)
 
 
-async def _visual_for_player(user_id: int, used: set[str], default_index: int) -> str:
-    visual = DEFAULT_VISUALS[default_index]
-    if user_id > 0:
-        profile = await db.get_user_profile(user_id)
-        inventory = await db.get_user_inventory_with_time(user_id) if profile else []
-        owned = {item["skin_id"] for item in inventory}
-        preferred = next(
-            (
-                skin["symbol"]
-                for skin in SHOP_SKINS
-                if profile and skin["id"] == profile["active_skin"] and skin["id"] in owned
-            ),
-            None,
-        )
+async def _preferred_visual_for_player(user_id: int) -> str | None:
+    if user_id <= 0:
+        return None
+    profile = await db.get_user_profile(user_id)
+    inventory = await db.get_user_inventory_with_time(user_id) if profile else []
+    owned = {item["skin_id"] for item in inventory}
+    return next(
+        (
+            skin["symbol"]
+            for skin in SHOP_SKINS
+            if profile and skin["id"] == profile["active_skin"] and skin["id"] in owned
+        ),
+        None,
+    )
+
+
+def _select_player_visuals(mode: str, preferred_visuals: list[str | None]) -> list[str]:
+    """Skin bor Battle o'yinida skinsiz o'yinchilarga faqat X va O beradi."""
+    use_triangle = mode == "battle" and not any(preferred_visuals)
+    standard_pool = DEFAULT_VISUALS if use_triangle else DEFAULT_VISUALS[:2]
+    fallback_pool = standard_pool + FALLBACK_VISUALS
+    selected: list[str] = []
+    used: set[str] = set()
+    for preferred in preferred_visuals:
         if preferred and preferred not in used:
             visual = preferred
-    if visual in used:
-        visual = next(symbol for symbol in DEFAULT_VISUALS + FALLBACK_VISUALS if symbol not in used)
-    return visual
+        else:
+            visual = next(symbol for symbol in fallback_pool if symbol not in used)
+        selected.append(visual)
+        used.add(visual)
+    return selected
+
+
+def _random_turn_index(player_count: int) -> int:
+    return rng.randrange(player_count)
 
 
 async def start_real_game(
@@ -403,14 +420,13 @@ async def start_real_game(
         main_msg_id = prep.get("main_msg_id")
         chat_name = prep["chat_name"]
 
-    random.shuffle(players_list)
+    rng.shuffle(players_list)
     game_id = str(uuid.uuid4())
     slots = [f"p{index}" for index in range(len(players_list))]
     players: dict[str, dict[str, Any]] = {}
-    used_visuals: set[str] = set()
-    for index, (slot, source) in enumerate(zip(slots, players_list, strict=True)):
-        visual = await _visual_for_player(source["id"], used_visuals, index)
-        used_visuals.add(visual)
+    preferred_visuals = await asyncio.gather(*(_preferred_visual_for_player(source["id"]) for source in players_list))
+    visuals = _select_player_visuals(current_mode, list(preferred_visuals))
+    for slot, source, visual in zip(slots, players_list, visuals, strict=True):
         players[slot] = {"id": source["id"], "name": source["name"], "visual": visual}
 
     size = MODES[current_mode]["size"]
@@ -421,7 +437,7 @@ async def start_real_game(
         "board": [[EMPTY for _ in range(size)] for _ in range(size)],
         "players": players,
         "slots": slots,
-        "turn_idx": 0,
+        "turn_idx": _random_turn_index(len(slots)),
         "placements": {},
         "draw_slots": [],
         "draw_type": None,
@@ -644,6 +660,51 @@ def _build_participants(game: dict[str, Any]) -> list[dict[str, Any]]:
     return participants
 
 
+def _format_result_lines(
+    game: dict[str, Any],
+    result_by_id: dict[int, dict[str, Any]],
+) -> list[str]:
+    draw_slots = set(game.get("draw_slots", []))
+    entries: list[dict[str, Any]] = []
+    for slot in game["slots"]:
+        player = game["players"][slot]
+        result = result_by_id.get(
+            player["id"],
+            {
+                "reward": 0,
+                "rank": game["placements"].get(slot, 99),
+                "is_draw": slot in draw_slots,
+            },
+        )
+        entries.append({"slot": slot, "player": player, "result": result})
+
+    ranked_entries = sorted(
+        (entry for entry in entries if not entry["result"]["is_draw"]),
+        key=lambda entry: entry["result"]["rank"],
+    )
+    lines: list[str] = []
+    for entry in ranked_entries:
+        player = entry["player"]
+        result = entry["result"]
+        rank = int(result["rank"])
+        if game["mode"] == "classic":
+            status = "🏆 <b>G'olib</b>" if rank == 1 else "❌ <b>Mag'lub</b>"
+        else:
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
+            status = f"{medal} <b>{rank}-o'rin</b>"
+        lines.append(f"{player['visual']} {escape(player['name'])} — {status} — <b>{int(result['reward']):,} so'm</b>")
+
+    draw_entries = [entry for entry in entries if entry["result"]["is_draw"]]
+    if draw_entries:
+        players_text = " — ".join(
+            f"{entry['player']['visual']} {escape(entry['player']['name'])}" for entry in draw_entries
+        )
+        reward = int(draw_entries[0]["result"]["reward"])
+        reward_text = f"har biriga <b>{reward:,} so'm</b>" if len(draw_entries) > 1 else f"<b>{reward:,} so'm</b>"
+        lines.append(f"🤝 {players_text} — <b>Durrang</b> — {reward_text}")
+    return lines
+
+
 async def finish_game(bot: Bot, game_id: str) -> None:
     game = games.get(game_id)
     if not game or game.get("status") != "active":
@@ -658,16 +719,7 @@ async def finish_game(bot: Bot, game_id: str) -> None:
         return
     result_by_id = {item["user_id"]: item for item in settlement["results"]}
     lines = ["<b>🏁 O'YIN YAKUNLANDI</b>", ""]
-    for slot in game["slots"]:
-        player = game["players"][slot]
-        result = result_by_id.get(player["id"], {"reward": 0, "rank": 99, "is_draw": False})
-        if result["is_draw"]:
-            status = f"🤝 {result['rank']}-o'rin durrang" if result["rank"] != 99 else "🤝 Durrang"
-        elif result["rank"] <= len(game["slots"]):
-            status = f"🏅 {result['rank']}-o'rin"
-        else:
-            status = "❌ Mag'lub"
-        lines.append(f"{player['visual']} {escape(player['name'])}: {status} — <b>{result['reward']:,} so'm</b>")
+    lines.extend(_format_result_lines(game, result_by_id))
     summary = "\n".join(lines)
     await _edit_game_messages(bot, game, summary, get_board_markup(game_id, disabled=True))
 
