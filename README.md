@@ -71,7 +71,7 @@ Deploydan keyin tekshiring:
 ### BotFather inline-mode checklist
 
 1. `@BotFather` → `/setinline` → botni tanlang → masalan, `Classic yoki Battle o'yinini tanlang` placeholderini kiriting.
-2. `@BotFather` → `/setinlinefeedback` → botni tanlang → `100%` ni yoqing. Bu `ChosenInlineResult` va `inline_message_id` kelishi uchun shart.
+2. `@BotFather` → `/setinlinefeedback` → botni tanlang → `100%` ni yoqing. Bu `ChosenInlineResult`ni darhol olish uchun tavsiya etiladi; callback fallback oqimi feedback kelmasa ham o'yinni boshlaydi.
 3. Servisni qayta deploy qiling; webhook `inline_query` va `chosen_inline_result` update turlarini ham qabul qiladi.
 4. Bot a'zo bo'lmagan test chatda `@bot_username` yozing, rejimni yuboring, boshqa akkaunt bilan qo'shiling va yurishdan keyin aynan shu inline xabar yangilanishini tekshiring.
 

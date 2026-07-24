@@ -47,6 +47,7 @@ router = Router(name="game")
 
 games: dict[str, dict[str, Any]] = {}
 matchmaking_queue: dict[str, list[dict[str, Any]]] = {"classic": [], "battle": []}
+inline_offers: dict[str, dict[str, Any]] = {}
 queue_lock = asyncio.Lock()
 game_locks: dict[str, asyncio.Lock] = {}
 rng = random.SystemRandom()
@@ -242,6 +243,51 @@ def _inline_waiting_text(game: dict[str, Any]) -> str:
     )
 
 
+def _new_inline_waiting_game(
+    game_id: str,
+    mode: str,
+    creator: dict[str, Any],
+    target: GameMessageTarget,
+    created_at: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": game_id,
+        "status": "waiting",
+        "mode": mode,
+        "req": MODES[mode]["players"],
+        "players_list": [creator],
+        "creator_id": creator["id"],
+        "chat_name": "Inline chat",
+        "is_inline": True,
+        "targets": [target.to_payload()],
+        "created_at": created_at or time.time(),
+    }
+
+
+def _remember_inline_offer(game_id: str, mode: str, user: types.User) -> None:
+    inline_offers[game_id] = {
+        "mode": mode,
+        "creator": {
+            "id": user.id,
+            "name": user.full_name,
+            "username": user.username,
+        },
+        "created_at": time.time(),
+        "status": "offered",
+    }
+
+
+def _prune_inline_offers(now: float | None = None) -> None:
+    current_time = now or time.time()
+    expired = [
+        game_id
+        for game_id, offer in inline_offers.items()
+        if current_time - offer.get("created_at", current_time) >= PREP_GAME_TTL
+    ]
+    for game_id in expired:
+        inline_offers.pop(game_id, None)
+
+
 async def _render_waiting_inline(bot: Bot, game: dict[str, Any]) -> None:
     await _edit_game_messages(bot, game, _inline_waiting_text(game), _inline_waiting_markup(game["id"]))
 
@@ -249,10 +295,12 @@ async def _render_waiting_inline(bot: Bot, game: dict[str, Any]) -> None:
 @router.inline_query()
 async def inline_game_query(query: types.InlineQuery) -> None:
     """Bot a'zo bo'lmagan chatlarga yuboriladigan yangi o'yin kartalarini beradi."""
+    _prune_inline_offers()
     creator = escape(query.from_user.full_name)
     results: list[InlineQueryResultArticle] = []
     for mode in ("classic", "battle"):
         game_id = str(uuid.uuid4())
+        _remember_inline_offer(game_id, mode, query.from_user)
         mode_name = MODES[mode]["name"]
         results.append(
             InlineQueryResultArticle(
@@ -282,33 +330,38 @@ async def chosen_inline_game(result: types.ChosenInlineResult, bot: Bot) -> None
     mode, game_id = parsed
     target = GameMessageTarget(inline_message_id=result.inline_message_id)
 
+    offer = inline_offers.get(game_id)
+    if offer and offer.get("status") == "consumed":
+        return
     if _user_has_active_game(result.from_user.id) or _queued_user(result.from_user.id):
         await target.edit(bot, "⚠️ Sizda boshqa faol o'yin yoki matchmaking navbati mavjud.")
         return
 
     async with _lock(game_id):
-        if game_id in games:
+        offer = inline_offers.get(game_id)
+        if offer and offer.get("status") == "consumed":
+            return
+        existing = games.get(game_id)
+        if existing:
+            if existing.get("status") == "waiting" and existing.get("is_inline"):
+                existing["targets"] = [target.to_payload()]
+                await db.save_game(game_id, "waiting", existing)
+                await _render_waiting_inline(bot, existing)
             return
         await db.ensure_user_exists(result.from_user.id, result.from_user.full_name, result.from_user.username)
-        game = {
-            "id": game_id,
-            "status": "waiting",
-            "mode": mode,
-            "req": MODES[mode]["players"],
-            "players_list": [
-                {
-                    "id": result.from_user.id,
-                    "name": result.from_user.full_name,
-                    "username": result.from_user.username,
-                }
-            ],
-            "creator_id": result.from_user.id,
-            "chat_name": "Inline chat",
-            "is_inline": True,
-            "targets": [target.to_payload()],
-            "created_at": time.time(),
+        creator = {
+            "id": result.from_user.id,
+            "name": result.from_user.full_name,
+            "username": result.from_user.username,
         }
+        game = _new_inline_waiting_game(game_id, mode, creator, target)
         games[game_id] = game
+        inline_offers[game_id] = {
+            "mode": mode,
+            "creator": creator,
+            "created_at": game["created_at"],
+            "status": "bound",
+        }
         await db.save_game(game_id, "waiting", game)
         await _render_waiting_inline(bot, game)
 
@@ -327,6 +380,23 @@ async def cb_inline_join(call: types.CallbackQuery, bot: Bot) -> None:
 
     async with _lock(game_id):
         game = games.get(game_id)
+        offer = inline_offers.get(game_id)
+        if not game and offer and offer.get("status") != "consumed":
+            if time.time() - offer.get("created_at", time.time()) >= PREP_GAME_TTL:
+                inline_offers.pop(game_id, None)
+            else:
+                creator = offer["creator"]
+                await db.ensure_user_exists(creator["id"], creator["name"], creator["username"])
+                game = _new_inline_waiting_game(
+                    game_id,
+                    offer["mode"],
+                    creator,
+                    callback_target,
+                    offer["created_at"],
+                )
+                games[game_id] = game
+                offer["status"] = "bound"
+                await db.save_game(game_id, "waiting", game)
         if not game or game.get("status") != "waiting" or not game.get("is_inline"):
             await call.answer("O'yin mavjud emas yoki kutish vaqti tugagan.", show_alert=True)
             return
@@ -342,6 +412,8 @@ async def cb_inline_join(call: types.CallbackQuery, bot: Bot) -> None:
             await callback_target.edit(bot, "⚠️ O'yin yaratuvchisi boshqa o'yinni boshlab yuborgan.")
             games.pop(game_id, None)
             game_locks.pop(game_id, None)
+            if offer:
+                offer["status"] = "consumed"
             await call.answer("O'yin endi mavjud emas.", show_alert=True)
             return
         if _user_has_active_game(call.from_user.id) or _queued_user(call.from_user.id):
@@ -356,6 +428,8 @@ async def cb_inline_join(call: types.CallbackQuery, bot: Bot) -> None:
         if len(game["players_list"]) >= game["req"]:
             await callback_target.edit(bot, "🎮 O'yin boshlanmoqda…")
             await start_real_game(bot, prep_id=game_id)
+            if offer:
+                offer["status"] = "consumed"
         else:
             await db.save_game(game_id, "waiting", game)
             await _render_waiting_inline(bot, game)
@@ -1021,6 +1095,7 @@ async def game_watchdog(bot: Bot) -> None:
     while True:
         await asyncio.sleep(3)
         now = time.time()
+        _prune_inline_offers(now)
         for game_id, game in list(games.items()):
             try:
                 if game.get("status") == "waiting" and now - game.get("created_at", now) >= PREP_GAME_TTL:
@@ -1032,6 +1107,7 @@ async def game_watchdog(bot: Bot) -> None:
                         logger.debug("Eskirgan o'yin xabarini yangilab bo'lmadi: %s", error)
                     games.pop(game_id, None)
                     game_locks.pop(game_id, None)
+                    inline_offers.pop(game_id, None)
                     continue
                 if game.get("status") != "active":
                     continue

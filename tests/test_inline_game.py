@@ -30,18 +30,26 @@ async def test_inline_query_returns_personal_classic_and_battle_results():
     query = AsyncMock()
     query.from_user = _user(7001, "Creator")
 
-    await game_handler.inline_game_query(query)
+    try:
+        await game_handler.inline_game_query(query)
 
-    answer = query.answer.await_args
-    assert answer.kwargs["cache_time"] == 0
-    assert answer.kwargs["is_personal"] is True
-    results = answer.kwargs["results"]
-    assert [result.title for result in results] == [
-        f"🎮 {game_handler.MODES['classic']['name']}",
-        f"🎮 {game_handler.MODES['battle']['name']}",
-    ]
-    assert all(game_handler._parse_inline_result_id(result.id) for result in results)
-    assert all(result.reply_markup.inline_keyboard[0][0].callback_data.startswith("inline_join:") for result in results)
+        answer = query.answer.await_args
+        assert answer.kwargs["cache_time"] == 0
+        assert answer.kwargs["is_personal"] is True
+        results = answer.kwargs["results"]
+        assert [result.title for result in results] == [
+            f"🎮 {game_handler.MODES['classic']['name']}",
+            f"🎮 {game_handler.MODES['battle']['name']}",
+        ]
+        assert all(game_handler._parse_inline_result_id(result.id) for result in results)
+        assert all(
+            result.reply_markup.inline_keyboard[0][0].callback_data.startswith("inline_join:") for result in results
+        )
+    finally:
+        for result in query.answer.await_args.kwargs.get("results", []):
+            parsed = game_handler._parse_inline_result_id(result.id)
+            if parsed:
+                game_handler.inline_offers.pop(parsed[1], None)
 
 
 @pytest.mark.asyncio
@@ -63,12 +71,74 @@ async def test_chosen_inline_result_persists_inline_target_and_updates_message(m
     finally:
         game_handler.games.pop(game_id, None)
         game_handler.game_locks.pop(game_id, None)
+        game_handler.inline_offers.pop(game_id, None)
 
     assert stored["status"] == "waiting"
     assert stored["is_inline"] is True
     assert stored["targets"] == [{"inline_message_id": "inline-message-2"}]
     game_handler.db.save_game.assert_awaited_once_with(game_id, "waiting", stored)
     assert bot.edit_message_text.await_args.kwargs["inline_message_id"] == "inline-message-2"
+
+
+@pytest.mark.asyncio
+async def test_inline_join_bootstraps_offer_without_chosen_inline_result(monkeypatch):
+    query = AsyncMock()
+    query.from_user = _user(7010, "Creator")
+    call = AsyncMock()
+    call.from_user = _user(7011, "Opponent")
+    call.inline_message_id = "inline-message-fallback"
+    bot = AsyncMock()
+    monkeypatch.setattr(game_handler.db, "ensure_user_exists", AsyncMock())
+    monkeypatch.setattr(game_handler.db, "save_game", AsyncMock())
+    monkeypatch.setattr(game_handler, "start_real_game", AsyncMock())
+    created_ids = []
+
+    try:
+        await game_handler.inline_game_query(query)
+        results = query.answer.await_args.kwargs["results"]
+        created_ids = [game_handler._parse_inline_result_id(result.id)[1] for result in results]
+        classic_id = created_ids[0]
+        call.data = f"inline_join:{classic_id}"
+
+        await game_handler.cb_inline_join(call, bot)
+
+        assert [player["id"] for player in game_handler.games[classic_id]["players_list"]] == [7010, 7011]
+        game_handler.start_real_game.assert_awaited_once_with(bot, prep_id=classic_id)
+        assert bot.edit_message_text.await_args.kwargs["inline_message_id"] == "inline-message-fallback"
+        assert game_handler.inline_offers[classic_id]["status"] == "consumed"
+    finally:
+        for game_id in created_ids:
+            game_handler.games.pop(game_id, None)
+            game_handler.game_locks.pop(game_id, None)
+            game_handler.inline_offers.pop(game_id, None)
+
+
+@pytest.mark.asyncio
+async def test_late_chosen_result_does_not_overwrite_started_inline_game(monkeypatch):
+    game_id = "adf0e0e9-0ce4-4937-9bf1-a7994fe463b0"
+    creator = _user(7012, "Creator")
+    game_handler.inline_offers[game_id] = {
+        "mode": "classic",
+        "creator": {"id": creator.id, "name": creator.full_name, "username": creator.username},
+        "created_at": 1,
+        "status": "consumed",
+    }
+    result = types.ChosenInlineResult(
+        result_id=game_handler._inline_result_id("classic", game_id),
+        from_user=creator,
+        query="",
+        inline_message_id="inline-message-started",
+    )
+    bot = AsyncMock()
+    monkeypatch.setattr(game_handler.db, "save_game", AsyncMock())
+
+    try:
+        await game_handler.chosen_inline_game(result, bot)
+    finally:
+        game_handler.inline_offers.pop(game_id, None)
+
+    bot.edit_message_text.assert_not_awaited()
+    game_handler.db.save_game.assert_not_awaited()
 
 
 @pytest.mark.asyncio
