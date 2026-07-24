@@ -66,7 +66,7 @@ async def on_startup(bot: Bot) -> None:
         url=settings.webhook_url,
         secret_token=settings.webhook_secret,
         drop_pending_updates=False,
-        allowed_updates=["message", "callback_query"],
+        allowed_updates=["message", "callback_query", "inline_query", "chosen_inline_result"],
     )
     watchdog_task = asyncio.create_task(game.game_watchdog(bot), name="game-watchdog")
     logger.info("Webhook o'rnatildi: %s", settings.webhook_url)

@@ -5,12 +5,18 @@ import logging
 import random
 import time
 import uuid
+from dataclasses import dataclass
 from html import escape
 from typing import Any
 
 from aiogram import Bot, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+)
 
 from config import (
     AFK_TIMEOUT,
@@ -44,6 +50,57 @@ matchmaking_queue: dict[str, list[dict[str, Any]]] = {"classic": [], "battle": [
 queue_lock = asyncio.Lock()
 game_locks: dict[str, asyncio.Lock] = {}
 rng = random.SystemRandom()
+
+
+@dataclass(frozen=True)
+class GameMessageTarget:
+    """Oddiy va inline Telegram xabarlarini bir xil usulda yangilash manzili."""
+
+    chat_id: int | None = None
+    message_id: int | None = None
+    inline_message_id: str | None = None
+
+    def __post_init__(self) -> None:
+        has_chat_message = self.chat_id is not None and self.message_id is not None
+        has_inline_message = self.inline_message_id is not None
+        if has_chat_message == has_inline_message:
+            raise ValueError("Target chat/message yoki inline_message_id dan aynan bittasini olishi kerak.")
+
+    @classmethod
+    def from_callback(cls, call: types.CallbackQuery) -> GameMessageTarget:
+        if call.inline_message_id:
+            return cls(inline_message_id=call.inline_message_id)
+        if call.message:
+            return cls(chat_id=call.message.chat.id, message_id=call.message.message_id)
+        raise ValueError("Callback xabar targetini bermadi.")
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> GameMessageTarget:
+        return cls(
+            chat_id=payload.get("chat_id"),
+            message_id=payload.get("message_id"),
+            inline_message_id=payload.get("inline_message_id"),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        if self.inline_message_id is not None:
+            return {"inline_message_id": self.inline_message_id}
+        return {"chat_id": self.chat_id, "message_id": self.message_id}
+
+    async def edit(self, bot: Bot, text: str, markup: InlineKeyboardMarkup | None = None) -> None:
+        if self.inline_message_id is not None:
+            await bot.edit_message_text(
+                inline_message_id=self.inline_message_id,
+                text=text,
+                reply_markup=markup,
+            )
+            return
+        await bot.edit_message_text(
+            chat_id=self.chat_id,
+            message_id=self.message_id,
+            text=text,
+            reply_markup=markup,
+        )
 
 
 def _lock(game_id: str) -> asyncio.Lock:
@@ -108,15 +165,26 @@ def get_board_markup(game_id: str, disabled: bool = False) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _game_targets(game: dict[str, Any]) -> list[GameMessageTarget]:
+    if game.get("targets"):
+        return [GameMessageTarget.from_payload(payload) for payload in game["targets"]]
+    if game.get("is_private"):
+        return [
+            GameMessageTarget(chat_id=chat_id, message_id=message_id)
+            for chat_id, message_id in game.get("private_chats", [])
+            if message_id
+        ]
+    if game.get("group_id") is not None and game.get("main_msg_id"):
+        return [GameMessageTarget(chat_id=game["group_id"], message_id=game["main_msg_id"])]
+    return []
+
+
 async def _edit_game_messages(bot: Bot, game: dict[str, Any], text: str, markup: InlineKeyboardMarkup | None) -> None:
-    targets = game.get("private_chats", []) if game.get("is_private") else [[game["group_id"], game.get("main_msg_id")]]
-    for chat_id, message_id in targets:
-        if not message_id:
-            continue
+    for target in _game_targets(game):
         try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=markup)
+            await target.edit(bot, text, markup)
         except Exception as error:
-            logger.warning("O'yin xabarini yangilab bo'lmadi game=%s chat=%s: %s", game["id"], chat_id, error)
+            logger.warning("O'yin xabarini yangilab bo'lmadi game=%s target=%s: %s", game["id"], target, error)
 
 
 async def update_ui(bot: Bot, game_id: str) -> None:
@@ -142,6 +210,155 @@ async def update_ui(bot: Bot, game_id: str) -> None:
 @router.callback_query(F.data == "none")
 async def cb_none(call: types.CallbackQuery) -> None:
     await call.answer("O'yin yakunlangan.")
+
+
+def _inline_result_id(mode: str, game_id: str) -> str:
+    return f"ttt:{mode}:{game_id}"
+
+
+def _parse_inline_result_id(result_id: str) -> tuple[str, str] | None:
+    try:
+        prefix, mode, game_id = result_id.split(":", 2)
+        parsed_id = str(uuid.UUID(game_id))
+    except (ValueError, AttributeError):
+        return None
+    if prefix != "ttt" or mode not in MODES:
+        return None
+    return mode, parsed_id
+
+
+def _inline_waiting_markup(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="➕ O'yinga qo'shilish", callback_data=f"inline_join:{game_id}")]]
+    )
+
+
+def _inline_waiting_text(game: dict[str, Any]) -> str:
+    names = "\n".join(f"{index}. {escape(player['name'])}" for index, player in enumerate(game["players_list"], 1))
+    return (
+        f"<b>🎮 {MODES[game['mode']]['name']} — inline o'yin</b>\n\n"
+        f"{names}\n\n"
+        f"Yana {game['req'] - len(game['players_list'])} o'yinchi kutilmoqda…"
+    )
+
+
+async def _render_waiting_inline(bot: Bot, game: dict[str, Any]) -> None:
+    await _edit_game_messages(bot, game, _inline_waiting_text(game), _inline_waiting_markup(game["id"]))
+
+
+@router.inline_query()
+async def inline_game_query(query: types.InlineQuery) -> None:
+    """Bot a'zo bo'lmagan chatlarga yuboriladigan yangi o'yin kartalarini beradi."""
+    creator = escape(query.from_user.full_name)
+    results: list[InlineQueryResultArticle] = []
+    for mode in ("classic", "battle"):
+        game_id = str(uuid.uuid4())
+        mode_name = MODES[mode]["name"]
+        results.append(
+            InlineQueryResultArticle(
+                id=_inline_result_id(mode, game_id),
+                title=f"🎮 {mode_name}",
+                description=f"{MODES[mode]['players']} kishilik Tic Tac Toe o'yini",
+                input_message_content=InputTextMessageContent(
+                    message_text=(
+                        f"<b>🎮 {mode_name} — inline o'yin</b>\n\n"
+                        f"1. {creator}\n\n"
+                        "Raqib(lar) pastdagi tugma orqali qo'shiladi."
+                    ),
+                    parse_mode="HTML",
+                ),
+                reply_markup=_inline_waiting_markup(game_id),
+            )
+        )
+    await query.answer(results=results, cache_time=0, is_personal=True)
+
+
+@router.chosen_inline_result()
+async def chosen_inline_game(result: types.ChosenInlineResult, bot: Bot) -> None:
+    """Tanlangan natijani Telegram bergan inline_message_id bilan bog'laydi."""
+    parsed = _parse_inline_result_id(result.result_id)
+    if not parsed or not result.inline_message_id:
+        return
+    mode, game_id = parsed
+    target = GameMessageTarget(inline_message_id=result.inline_message_id)
+
+    if _user_has_active_game(result.from_user.id) or _queued_user(result.from_user.id):
+        await target.edit(bot, "⚠️ Sizda boshqa faol o'yin yoki matchmaking navbati mavjud.")
+        return
+
+    async with _lock(game_id):
+        if game_id in games:
+            return
+        await db.ensure_user_exists(result.from_user.id, result.from_user.full_name, result.from_user.username)
+        game = {
+            "id": game_id,
+            "status": "waiting",
+            "mode": mode,
+            "req": MODES[mode]["players"],
+            "players_list": [
+                {
+                    "id": result.from_user.id,
+                    "name": result.from_user.full_name,
+                    "username": result.from_user.username,
+                }
+            ],
+            "creator_id": result.from_user.id,
+            "chat_name": "Inline chat",
+            "is_inline": True,
+            "targets": [target.to_payload()],
+            "created_at": time.time(),
+        }
+        games[game_id] = game
+        await db.save_game(game_id, "waiting", game)
+        await _render_waiting_inline(bot, game)
+
+
+@router.callback_query(F.data.startswith("inline_join:"))
+async def cb_inline_join(call: types.CallbackQuery, bot: Bot) -> None:
+    try:
+        game_id = str(uuid.UUID(call.data.split(":", 1)[1]))
+        callback_target = GameMessageTarget.from_callback(call)
+    except (ValueError, AttributeError):
+        await call.answer("Noto'g'ri inline o'yin.", show_alert=True)
+        return
+    if callback_target.inline_message_id is None:
+        await call.answer("Bu tugma faqat inline xabarda ishlaydi.", show_alert=True)
+        return
+
+    async with _lock(game_id):
+        game = games.get(game_id)
+        if not game or game.get("status") != "waiting" or not game.get("is_inline"):
+            await call.answer("O'yin mavjud emas yoki kutish vaqti tugagan.", show_alert=True)
+            return
+        if callback_target not in _game_targets(game):
+            await call.answer("Bu tugma boshqa o'yinga tegishli.", show_alert=True)
+            return
+        if any(player["id"] == call.from_user.id for player in game["players_list"]):
+            await call.answer("Siz allaqachon bu o'yindasiz.", show_alert=True)
+            return
+        if _user_has_active_game(game["creator_id"]):
+            game["status"] = "cancelled"
+            await db.save_game(game_id, "cancelled", game)
+            await callback_target.edit(bot, "⚠️ O'yin yaratuvchisi boshqa o'yinni boshlab yuborgan.")
+            games.pop(game_id, None)
+            game_locks.pop(game_id, None)
+            await call.answer("O'yin endi mavjud emas.", show_alert=True)
+            return
+        if _user_has_active_game(call.from_user.id) or _queued_user(call.from_user.id):
+            await call.answer("Sizda boshqa faol o'yin yoki matchmaking navbati mavjud.", show_alert=True)
+            return
+
+        await db.ensure_user_exists(call.from_user.id, call.from_user.full_name, call.from_user.username)
+        game["players_list"].append(
+            {"id": call.from_user.id, "name": call.from_user.full_name, "username": call.from_user.username}
+        )
+        await call.answer("O'yinga qo'shildingiz.")
+        if len(game["players_list"]) >= game["req"]:
+            await callback_target.edit(bot, "🎮 O'yin boshlanmoqda…")
+            await start_real_game(bot, prep_id=game_id)
+        else:
+            await db.save_game(game_id, "waiting", game)
+            await _render_waiting_inline(bot, game)
 
 
 @router.message(Command("game"))
@@ -402,10 +619,12 @@ async def start_real_game(
     prep: dict[str, Any] | None = None
     main_msg_id: int | None = None
     group_username: str | None = None
+    targets: list[dict[str, Any]] = []
     if matchmaking_data is not None:
         players_list = list(matchmaking_data)
         current_mode = mode or "classic"
         is_private = True
+        is_inline = False
         group_id = players_list[0]["id"]
         chat_name = "Matchmaking"
     else:
@@ -414,11 +633,13 @@ async def start_real_game(
             return
         players_list = list(prep["players_list"])
         current_mode = prep["mode"]
+        is_inline = bool(prep.get("is_inline"))
         is_private = False
-        group_id = prep["group_id"]
+        group_id = prep.get("group_id")
         group_username = prep.get("group_username")
         main_msg_id = prep.get("main_msg_id")
         chat_name = prep["chat_name"]
+        targets = list(prep.get("targets", []))
 
     rng.shuffle(players_list)
     game_id = str(uuid.uuid4())
@@ -445,6 +666,8 @@ async def start_real_game(
         "group_username": group_username,
         "chat_name": chat_name,
         "is_private": is_private,
+        "is_inline": is_inline,
+        "targets": targets,
         "private_chats": [],
         "last_move": time.time(),
         "created_at": time.time(),
@@ -457,7 +680,7 @@ async def start_real_game(
             if player["id"] > 0:
                 message = await bot.send_message(player["id"], f"🎮 O'yin boshlandi. Belgingiz: {player['visual']}")
                 game["private_chats"].append([player["id"], message.message_id])
-    else:
+    elif not is_inline:
         if main_msg_id:
             game["main_msg_id"] = main_msg_id
         else:
@@ -533,6 +756,14 @@ async def cb_move(call: types.CallbackQuery, bot: Bot) -> None:
         game = games.get(game_id)
         if not game or game.get("status") != "active":
             await call.answer("O'yin yakunlangan.", show_alert=True)
+            return
+        try:
+            callback_target = GameMessageTarget.from_callback(call)
+        except ValueError:
+            await call.answer("O'yin xabari aniqlanmadi.", show_alert=True)
+            return
+        if callback_target not in _game_targets(game):
+            await call.answer("Bu tugma boshqa o'yin xabariga tegishli.", show_alert=True)
             return
         size = len(game["board"])
         if not (0 <= row < size and 0 <= column < size) or game["board"][row][column] is not EMPTY:
@@ -723,7 +954,7 @@ async def finish_game(bot: Bot, game_id: str) -> None:
     summary = "\n".join(lines)
     await _edit_game_messages(bot, game, summary, get_board_markup(game_id, disabled=True))
 
-    if not game.get("is_private"):
+    if not game.get("is_private") and not game.get("is_inline"):
         for slot in game["slots"]:
             player = game["players"][slot]
             if player["id"] > 0:
@@ -762,13 +993,14 @@ async def _handle_timeout(bot: Bot, game_id: str, slot: str, reason: str = "Vaqt
         if current_slot in game["placements"]:
             _next_turn(game)
         await db.save_game(game_id, "active", game)
-        try:
-            await bot.send_message(
-                game["group_id"] if not game["is_private"] else game["players"][slot]["id"],
-                f"⌛️ {escape(game['players'][slot]['name'])}: {reason}.",
-            )
-        except Exception as error:
-            logger.debug("Taymaut xabarini yuborib bo'lmadi: %s", error)
+        if not game.get("is_inline"):
+            try:
+                await bot.send_message(
+                    game["group_id"] if not game["is_private"] else game["players"][slot]["id"],
+                    f"⌛️ {escape(game['players'][slot]['name'])}: {reason}.",
+                )
+            except Exception as error:
+                logger.debug("Taymaut xabarini yuborib bo'lmadi: %s", error)
         await update_ui(bot, game_id)
     _schedule_robot_if_needed(bot, game_id)
 
@@ -795,11 +1027,7 @@ async def game_watchdog(bot: Bot) -> None:
                     game["status"] = "cancelled"
                     await db.save_game(game_id, "cancelled", game)
                     try:
-                        await bot.edit_message_text(
-                            "⌛️ O'yin yig'ish vaqti tugadi.",
-                            chat_id=game["group_id"],
-                            message_id=game.get("main_msg_id"),
-                        )
+                        await _edit_game_messages(bot, game, "⌛️ O'yin yig'ish vaqti tugadi.", None)
                     except Exception as error:
                         logger.debug("Eskirgan o'yin xabarini yangilab bo'lmadi: %s", error)
                     games.pop(game_id, None)

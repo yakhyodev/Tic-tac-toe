@@ -6,6 +6,7 @@ Aiogram 3, aiohttp va PostgreSQL asosidagi Classic/Battle Tic-Tac-Toe bot.
 
 - 2 kishilik 3×3 Classic va 3 kishilik 5×5 Battle
 - Shaxsiy matchmaking, guruh o'yinlari va robotlar
+- Bot a'zo bo'lmagan chatlarda `@bot_username` orqali inline Classic/Battle o'yinlari
 - Guruh o'yiniga private-chat deep-link orqali xavfsiz qo'shilish va aynan o'yin xabariga qaytish
 - 45 soniyalik taymaut, `/cancel` va kutilayotgan o'yin TTL'i
 - Restartdan keyin ochiq o'yinlarni PostgreSQL'dan tiklash
@@ -66,6 +67,13 @@ Deploydan keyin tekshiring:
 - `https://<domain>/ready` → HTTP 200
 - Railway logida migration va webhook xatosi yo'q
 - Telegram'da `/start`, `/game`, `/shop`, `/top`
+
+### BotFather inline-mode checklist
+
+1. `@BotFather` → `/setinline` → botni tanlang → masalan, `Classic yoki Battle o'yinini tanlang` placeholderini kiriting.
+2. `@BotFather` → `/setinlinefeedback` → botni tanlang → `100%` ni yoqing. Bu `ChosenInlineResult` va `inline_message_id` kelishi uchun shart.
+3. Servisni qayta deploy qiling; webhook `inline_query` va `chosen_inline_result` update turlarini ham qabul qiladi.
+4. Bot a'zo bo'lmagan test chatda `@bot_username` yozing, rejimni yuboring, boshqa akkaunt bilan qo'shiling va yurishdan keyin aynan shu inline xabar yangilanishini tekshiring.
 
 ## Xavfsizlik
 
