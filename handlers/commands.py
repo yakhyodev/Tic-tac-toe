@@ -83,7 +83,8 @@ async def cmd_help(message: types.Message) -> None:
         "/shop — skinlar do'koni\n"
         "/skins — inventar\n"
         "/ref — referral havola\n"
-        "/top — global reyting\n"
+        "/top — guruhda guruh reytingi, shaxsiy chatda global reyting\n"
+        "/global — global reyting\n"
         "/rules — o'yin qoidalari"
     )
 
@@ -234,9 +235,7 @@ async def show_stats(message: types.Message, bot: Bot) -> None:
     )
 
 
-@router.message(F.text.in_({"🌍 Global reyting", "🌍 Global Reyting"}))
-@router.message(Command("top", "global"))
-async def cmd_global(message: types.Message) -> None:
+async def _send_global_rating(message: types.Message) -> None:
     top_list = await db.get_global_top(35)
     if not top_list:
         await message.answer("Reyting hali shakllanmagan.")
@@ -245,6 +244,34 @@ async def cmd_global(message: types.Message) -> None:
     for index, row in enumerate(top_list, 1):
         place = ["🥇", "🥈", "🥉"][index - 1] if index <= 3 else f"{index}."
         lines.append(f"{place} <b>{escape(row['full_name'])}</b> — {row['rating_points']} RP")
+    await message.answer("\n".join(lines))
+
+
+@router.message(F.text.in_({"🌍 Global reyting", "🌍 Global Reyting"}))
+@router.message(Command("global"))
+async def cmd_global(message: types.Message) -> None:
+    await _send_global_rating(message)
+
+
+@router.message(Command("top"))
+async def cmd_top(message: types.Message) -> None:
+    if message.chat.type not in {"group", "supergroup"}:
+        await _send_global_rating(message)
+        return
+
+    top_list = await db.get_group_top(message.chat.id, 35)
+    if not top_list:
+        await message.answer("Bu guruhda yakunlangan o'yinlar bo'yicha reyting hali shakllanmagan.")
+        return
+
+    group_name = escape(message.chat.title or "Guruh")
+    lines = [f"<b>👥 {group_name} — TOP 35</b>", "<i>Faqat shu guruhda yakunlangan o'yinlar</i>", ""]
+    for index, row in enumerate(top_list, 1):
+        place = ["🥇", "🥈", "🥉"][index - 1] if index <= 3 else f"{index}."
+        lines.append(
+            f"{place} <b>{escape(row['full_name'])}</b> — {row['rating_points']} RP"
+            f" · 🎮 {row['games_count']} · 🏆 {row['wins']} · 🤝 {row['draws']}"
+        )
     await message.answer("\n".join(lines))
 
 

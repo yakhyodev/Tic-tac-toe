@@ -57,7 +57,8 @@ async def on_startup(bot: Bot) -> None:
     group_commands = [
         BotCommand(command="game", description="O'yin boshlash"),
         BotCommand(command="cancel", description="O'yinni bekor qilish"),
-        BotCommand(command="top", description="Global reyting"),
+        BotCommand(command="top", description="Guruh reytingi"),
+        BotCommand(command="global", description="Global reyting"),
         BotCommand(command="rules", description="O'yin qoidalari"),
     ]
     await bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())

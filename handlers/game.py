@@ -965,6 +965,13 @@ def _build_participants(game: dict[str, Any]) -> list[dict[str, Any]]:
     return participants
 
 
+def _group_rating_chat_id(game: dict[str, Any]) -> int | None:
+    if game.get("is_private") or game.get("is_inline"):
+        return None
+    group_id = game.get("group_id")
+    return int(group_id) if group_id is not None else None
+
+
 def _format_result_lines(
     game: dict[str, Any],
     result_by_id: dict[int, dict[str, Any]],
@@ -1016,7 +1023,12 @@ async def finish_game(bot: Bot, game_id: str) -> None:
         return
     game["status"] = "finishing"
     try:
-        settlement = await db.process_game_results(game_id, game["mode"], _build_participants(game))
+        settlement = await db.process_game_results(
+            game_id,
+            game["mode"],
+            _build_participants(game),
+            chat_id=_group_rating_chat_id(game),
+        )
     except Exception:
         game["status"] = "active"
         await db.save_game(game_id, "active", game)

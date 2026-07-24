@@ -183,7 +183,11 @@ class Database:
         return {1: 30, 2: 10, 3: -10}.get(rank, -10)
 
     async def process_game_results(
-        self, game_id: str, mode: str, participants: list[dict[str, Any]]
+        self,
+        game_id: str,
+        mode: str,
+        participants: list[dict[str, Any]],
+        chat_id: int | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         results: list[dict[str, Any]] = []
         referral_notifications: list[dict[str, Any]] = []
@@ -195,9 +199,11 @@ class Database:
                     is_draw = bool(participant.get("is_draw", False))
                     draw_type = participant.get("draw_type")
                     reward = self._reward(mode, rank, is_draw, draw_type)
+                    rating_delta = self._rating_delta(mode, rank, is_draw)
                     inserted = await connection.fetchrow(
-                        """INSERT INTO game_results(game_id, user_id, mode, rank, is_draw, draw_type, reward)
-                           VALUES($1, $2, $3, $4, $5, $6, $7)
+                        """INSERT INTO game_results
+                           (game_id, user_id, mode, rank, is_draw, draw_type, reward, rating_delta, chat_id)
+                           VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
                            ON CONFLICT(game_id, user_id) DO NOTHING
                            RETURNING reward, rank, is_draw, draw_type""",
                         game_id,
@@ -207,6 +213,8 @@ class Database:
                         is_draw,
                         draw_type,
                         reward,
+                        rating_delta,
+                        chat_id,
                     )
                     if not inserted:
                         existing = await connection.fetchrow(
@@ -228,7 +236,6 @@ class Database:
                         continue
 
                     if user_id > 0:
-                        rating_delta = self._rating_delta(mode, rank, is_draw)
                         await connection.execute(
                             """UPDATE balances
                                SET balance = balance + $1,
@@ -374,6 +381,27 @@ class Database:
                FROM users u JOIN balances b ON b.user_id = u.id
                WHERE u.is_robot = FALSE
                ORDER BY b.rating_points DESC, b.balance DESC LIMIT $1""",
+            limit,
+        )
+        return [dict(row) for row in rows]
+
+    async def get_group_top(self, chat_id: int, limit: int = 35) -> list[dict[str, Any]]:
+        rows = await self._pool().fetch(
+            """SELECT u.id AS user_id,
+                      u.full_name,
+                      GREATEST(0, $2 + SUM(gr.rating_delta))::INTEGER AS rating_points,
+                      COUNT(*)::INTEGER AS games_count,
+                      COUNT(*) FILTER (WHERE gr.rank = 1 AND gr.is_draw = FALSE)::INTEGER AS wins,
+                      COUNT(*) FILTER (WHERE gr.is_draw = TRUE)::INTEGER AS draws
+               FROM game_results gr
+               JOIN users u ON u.id = gr.user_id
+               WHERE gr.chat_id = $1
+                 AND u.is_robot = FALSE
+               GROUP BY u.id, u.full_name
+               ORDER BY rating_points DESC, wins DESC, games_count DESC, u.full_name
+               LIMIT $3""",
+            chat_id,
+            STARTING_RATING,
             limit,
         )
         return [dict(row) for row in rows]
