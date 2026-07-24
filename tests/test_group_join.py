@@ -84,6 +84,13 @@ async def test_start_payload_sends_join_confirmation_with_group_button(monkeypat
 
     await cmd_start(message, bot)
 
+    game_handler.db.register_user.assert_awaited_once_with(
+        user.id,
+        user.username,
+        user.full_name,
+        None,
+        bot_started=True,
+    )
     game_handler.join_group_game_from_start.assert_awaited_once_with(bot, user, game_id)
     answer = message.answer.await_args
     assert answer.args[0] == "✅ Siz o'yinga qo'shildingiz, omad!"

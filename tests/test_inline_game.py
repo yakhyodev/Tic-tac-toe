@@ -257,12 +257,29 @@ async def test_inline_game_result_replaces_the_inline_message(monkeypatch):
         AsyncMock(
             return_value={
                 "results": [
-                    {"user_id": 7007, "rank": 1, "reward": 25, "is_draw": False},
-                    {"user_id": 7008, "rank": 2, "reward": -10, "is_draw": False},
+                    {
+                        "user_id": 7007,
+                        "rank": 1,
+                        "reward": 5_000,
+                        "is_draw": False,
+                        "rating_delta": 25,
+                    },
+                    {
+                        "user_id": 7008,
+                        "rank": 2,
+                        "reward": 0,
+                        "is_draw": False,
+                        "rating_delta": -10,
+                    },
                 ],
                 "referrals": [],
             }
         ),
+    )
+    monkeypatch.setattr(
+        game_handler.db,
+        "get_private_message_user_ids",
+        AsyncMock(return_value={7007}),
     )
     monkeypatch.setattr(game_handler.db, "delete_game", AsyncMock())
 
@@ -276,4 +293,6 @@ async def test_inline_game_result_replaces_the_inline_message(monkeypatch):
     assert edit.kwargs["inline_message_id"] == "inline-message-5"
     assert "O'YIN YAKUNLANDI" in edit.kwargs["text"]
     assert "G'olib" in edit.kwargs["text"]
-    bot.send_message.assert_not_awaited()
+    assert "+25 RP" in edit.kwargs["text"] and "-10 RP" in edit.kwargs["text"]
+    game_handler.db.get_private_message_user_ids.assert_awaited_once()
+    bot.send_message.assert_awaited_once_with(7007, edit.kwargs["text"])

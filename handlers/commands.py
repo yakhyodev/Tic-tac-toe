@@ -42,7 +42,13 @@ async def cmd_start(message: types.Message, bot: Bot) -> None:
     inviter_id = int(payload) if payload.isdigit() else None
     if inviter_id == user.id:
         inviter_id = None
-    await db.register_user(user.id, user.username, user.full_name, inviter_id)
+    await db.register_user(
+        user.id,
+        user.username,
+        user.full_name,
+        inviter_id,
+        bot_started=message.chat.type == "private",
+    )
 
     bot_info = await bot.get_me()
     if message.chat.type != "private":

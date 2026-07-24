@@ -85,6 +85,7 @@ class Database:
         username: str | None,
         full_name: str,
         referred_by: int | None = None,
+        bot_started: bool = False,
     ) -> bool:
         async with self._pool().acquire() as connection:
             async with connection.transaction():
@@ -94,14 +95,15 @@ class Database:
                         "SELECT id FROM users WHERE id = $1 AND is_robot = FALSE", referred_by
                     )
                 inserted = await connection.fetchval(
-                    """INSERT INTO users(id, username, full_name, referred_by)
-                       VALUES($1, $2, $3, $4)
+                    """INSERT INTO users(id, username, full_name, referred_by, bot_started)
+                       VALUES($1, $2, $3, $4, $5)
                        ON CONFLICT(id) DO NOTHING
                        RETURNING id""",
                     user_id,
                     username,
                     full_name,
                     valid_inviter,
+                    bot_started,
                 )
                 if inserted:
                     await connection.execute(
@@ -121,15 +123,34 @@ class Database:
                     return True
 
                 await connection.execute(
-                    "UPDATE users SET username = $1, full_name = $2 WHERE id = $3",
+                    """UPDATE users
+                       SET username = $1,
+                           full_name = $2,
+                           bot_started = bot_started OR $3
+                       WHERE id = $4""",
                     username,
                     full_name,
+                    bot_started,
                     user_id,
                 )
                 return False
 
     async def ensure_user_exists(self, user_id: int, full_name: str, username: str | None = None) -> bool:
         return await self.register_user(user_id, username, full_name)
+
+    async def get_private_message_user_ids(self, user_ids: list[int]) -> set[int]:
+        positive_ids = sorted({user_id for user_id in user_ids if user_id > 0})
+        if not positive_ids:
+            return set()
+        rows = await self._pool().fetch(
+            """SELECT id
+               FROM users
+               WHERE id = ANY($1::BIGINT[])
+                 AND bot_started = TRUE
+                 AND is_robot = FALSE""",
+            positive_ids,
+        )
+        return {int(row["id"]) for row in rows}
 
     async def get_user_profile(self, user_id: int) -> dict[str, Any] | None:
         row = await self._pool().fetchrow(
@@ -205,7 +226,7 @@ class Database:
                            (game_id, user_id, mode, rank, is_draw, draw_type, reward, rating_delta, chat_id)
                            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)
                            ON CONFLICT(game_id, user_id) DO NOTHING
-                           RETURNING reward, rank, is_draw, draw_type""",
+                           RETURNING reward, rank, is_draw, draw_type, rating_delta""",
                         game_id,
                         user_id,
                         mode,
@@ -218,7 +239,7 @@ class Database:
                     )
                     if not inserted:
                         existing = await connection.fetchrow(
-                            """SELECT reward, rank, is_draw, draw_type FROM game_results
+                            """SELECT reward, rank, is_draw, draw_type, rating_delta FROM game_results
                                WHERE game_id = $1 AND user_id = $2""",
                             game_id,
                             user_id,
@@ -231,6 +252,7 @@ class Database:
                                 "rank": rank,
                                 "is_draw": is_draw,
                                 "draw_type": draw_type,
+                                "rating_delta": int(existing["rating_delta"]) if existing else 0,
                             }
                         )
                         continue
@@ -283,7 +305,14 @@ class Database:
                                 {"inviter_id": inviter_id, "reward": referral_reward, "referred_id": user_id}
                             )
                     results.append(
-                        {"user_id": user_id, "reward": reward, "rank": rank, "is_draw": is_draw, "draw_type": draw_type}
+                        {
+                            "user_id": user_id,
+                            "reward": reward,
+                            "rank": rank,
+                            "is_draw": is_draw,
+                            "draw_type": draw_type,
+                            "rating_delta": rating_delta,
+                        }
                     )
         return {"results": results, "referrals": referral_notifications}
 

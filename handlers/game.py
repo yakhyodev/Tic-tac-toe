@@ -986,6 +986,7 @@ def _format_result_lines(
                 "reward": 0,
                 "rank": game["placements"].get(slot, 99),
                 "is_draw": slot in draw_slots,
+                "rating_delta": 0,
             },
         )
         entries.append({"slot": slot, "player": player, "result": result})
@@ -1004,7 +1005,11 @@ def _format_result_lines(
         else:
             medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(rank, "🏅")
             status = f"{medal} <b>{rank}-o'rin</b>"
-        lines.append(f"{player['visual']} {escape(player['name'])} — {status} — <b>{int(result['reward']):,} so'm</b>")
+        rating_delta = int(result.get("rating_delta", 0))
+        lines.append(
+            f"{player['visual']} {escape(player['name'])} — {status} — "
+            f"<b>{int(result['reward']):,} so'm</b> · <b>{rating_delta:+d} RP</b>"
+        )
 
     draw_entries = [entry for entry in entries if entry["result"]["is_draw"]]
     if draw_entries:
@@ -1012,7 +1017,9 @@ def _format_result_lines(
             f"{entry['player']['visual']} {escape(entry['player']['name'])}" for entry in draw_entries
         )
         reward = int(draw_entries[0]["result"]["reward"])
-        reward_text = f"har biriga <b>{reward:,} so'm</b>" if len(draw_entries) > 1 else f"<b>{reward:,} so'm</b>"
+        rating_delta = int(draw_entries[0]["result"].get("rating_delta", 0))
+        result_text = f"<b>{reward:,} so'm</b> · <b>{rating_delta:+d} RP</b>"
+        reward_text = f"har biriga {result_text}" if len(draw_entries) > 1 else result_text
         lines.append(f"🤝 {players_text} — <b>Durrang</b> — {reward_text}")
     return lines
 
@@ -1040,14 +1047,21 @@ async def finish_game(bot: Bot, game_id: str) -> None:
     summary = "\n".join(lines)
     await _edit_game_messages(bot, game, summary, get_board_markup(game_id, disabled=True))
 
+    private_result_recipients: set[int] = set()
+    player_ids = {game["players"][slot]["id"] for slot in game["slots"] if game["players"][slot]["id"] > 0}
     if not game.get("is_private") and not game.get("is_inline"):
-        for slot in game["slots"]:
-            player = game["players"][slot]
-            if player["id"] > 0:
-                try:
-                    await bot.send_message(player["id"], summary)
-                except Exception as error:
-                    logger.debug("Guruh o'yini natijasini shaxsiy chatga yuborib bo'lmadi: %s", error)
+        private_result_recipients = player_ids
+    elif game.get("is_inline"):
+        try:
+            private_result_recipients = await db.get_private_message_user_ids(list(player_ids))
+        except Exception:
+            logger.exception("Inline natija uchun private recipientlarni aniqlab bo'lmadi game=%s", game_id)
+
+    for user_id in private_result_recipients:
+        try:
+            await bot.send_message(user_id, summary)
+        except Exception as error:
+            logger.debug("O'yin natijasini shaxsiy chatga yuborib bo'lmadi user=%s: %s", user_id, error)
     for referral in settlement["referrals"]:
         try:
             await bot.send_message(
