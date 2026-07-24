@@ -221,6 +221,7 @@ class Database:
                     draw_type = participant.get("draw_type")
                     reward = self._reward(mode, rank, is_draw, draw_type)
                     rating_delta = self._rating_delta(mode, rank, is_draw)
+                    rating_points: int | None = None
                     inserted = await connection.fetchrow(
                         """INSERT INTO game_results
                            (game_id, user_id, mode, rank, is_draw, draw_type, reward, rating_delta, chat_id)
@@ -245,6 +246,12 @@ class Database:
                             user_id,
                         )
                         reward = int(existing["reward"]) if existing else 0
+                        if user_id > 0:
+                            current_rating = await connection.fetchval(
+                                "SELECT rating_points FROM balances WHERE user_id = $1",
+                                user_id,
+                            )
+                            rating_points = int(current_rating) if current_rating is not None else None
                         results.append(
                             {
                                 "user_id": user_id,
@@ -253,20 +260,23 @@ class Database:
                                 "is_draw": is_draw,
                                 "draw_type": draw_type,
                                 "rating_delta": int(existing["rating_delta"]) if existing else 0,
+                                "rating_points": rating_points,
                             }
                         )
                         continue
 
                     if user_id > 0:
-                        await connection.execute(
+                        current_rating = await connection.fetchval(
                             """UPDATE balances
                                SET balance = balance + $1,
                                    rating_points = GREATEST(0, rating_points + $2)
-                               WHERE user_id = $3""",
+                               WHERE user_id = $3
+                               RETURNING rating_points""",
                             reward,
                             rating_delta,
                             user_id,
                         )
+                        rating_points = int(current_rating) if current_rating is not None else None
                         await connection.execute(
                             """INSERT INTO wallet_transactions
                                (user_id, currency, amount, transaction_type, reference_id, idempotency_key)
@@ -312,6 +322,7 @@ class Database:
                             "is_draw": is_draw,
                             "draw_type": draw_type,
                             "rating_delta": rating_delta,
+                            "rating_points": rating_points,
                         }
                     )
         return {"results": results, "referrals": referral_notifications}

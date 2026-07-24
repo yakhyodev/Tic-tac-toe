@@ -166,6 +166,19 @@ def get_board_markup(game_id: str, disabled: bool = False) -> InlineKeyboardMark
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _global_rating_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🌍 /global — reytingni tekshirish",
+                    callback_data="show_global_rating",
+                )
+            ]
+        ]
+    )
+
+
 def _game_targets(game: dict[str, Any]) -> list[GameMessageTarget]:
     if game.get("targets"):
         return [GameMessageTarget.from_payload(payload) for payload in game["targets"]]
@@ -1058,8 +1071,19 @@ async def finish_game(bot: Bot, game_id: str) -> None:
             logger.exception("Inline natija uchun private recipientlarni aniqlab bo'lmadi game=%s", game_id)
 
     for user_id in private_result_recipients:
+        private_summary = summary
+        rating_points = result_by_id.get(user_id, {}).get("rating_points")
+        if rating_points is not None:
+            private_summary += (
+                f"\n\n🏅 Global reytingingiz: <b>{int(rating_points)} RP</b>\n"
+                "Reytingni tekshirish uchun /global buyrug'ini bosing."
+            )
         try:
-            await bot.send_message(user_id, summary)
+            await bot.send_message(
+                user_id,
+                private_summary,
+                reply_markup=_global_rating_markup(),
+            )
         except Exception as error:
             logger.debug("O'yin natijasini shaxsiy chatga yuborib bo'lmadi user=%s: %s", user_id, error)
     for referral in settlement["referrals"]:

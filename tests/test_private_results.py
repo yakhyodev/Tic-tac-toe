@@ -8,6 +8,24 @@ from handlers import commands as command_handler
 
 
 @pytest.mark.asyncio
+async def test_global_rating_button_opens_leaderboard(monkeypatch):
+    call = AsyncMock()
+    call.message = AsyncMock()
+    monkeypatch.setattr(
+        command_handler.db,
+        "get_global_top",
+        AsyncMock(return_value=[{"full_name": "Player", "rating_points": 1025, "balance": 5_000}]),
+    )
+
+    await command_handler.cb_global_rating(call)
+
+    call.answer.assert_awaited_once_with()
+    text = call.message.answer.await_args.args[0]
+    assert "GLOBAL TOP 35" in text
+    assert "Player" in text and "1025 RP" in text
+
+
+@pytest.mark.asyncio
 async def test_start_in_group_does_not_enable_private_messages(monkeypatch):
     user = types.User(id=10, is_bot=False, first_name="Player", username="player")
     message = AsyncMock()
@@ -62,6 +80,7 @@ async def test_game_result_updates_wallet_and_rating_for_inline_player():
         ]
     )
     connection.execute = AsyncMock()
+    connection.fetchval = AsyncMock(return_value=1025)
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
     connection.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
@@ -75,11 +94,10 @@ async def test_game_result_updates_wallet_and_rating_for_inline_player():
         chat_id=None,
     )
 
-    balance_update = next(
-        call
-        for call in connection.execute.await_args_list
-        if "UPDATE balances" in call.args[0] and "rating_points" in call.args[0]
-    )
+    balance_update = connection.fetchval.await_args
+    assert "UPDATE balances" in balance_update.args[0]
+    assert "RETURNING rating_points" in balance_update.args[0]
     assert balance_update.args[1:] == (5_000, 25, 42)
     assert settlement["results"][0]["reward"] == 5_000
     assert settlement["results"][0]["rating_delta"] == 25
+    assert settlement["results"][0]["rating_points"] == 1025

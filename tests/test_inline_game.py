@@ -263,6 +263,7 @@ async def test_inline_game_result_replaces_the_inline_message(monkeypatch):
                         "reward": 5_000,
                         "is_draw": False,
                         "rating_delta": 25,
+                        "rating_points": 1025,
                     },
                     {
                         "user_id": 7008,
@@ -270,6 +271,7 @@ async def test_inline_game_result_replaces_the_inline_message(monkeypatch):
                         "reward": 0,
                         "is_draw": False,
                         "rating_delta": -10,
+                        "rating_points": 990,
                     },
                 ],
                 "referrals": [],
@@ -295,4 +297,9 @@ async def test_inline_game_result_replaces_the_inline_message(monkeypatch):
     assert "G'olib" in edit.kwargs["text"]
     assert "+25 RP" in edit.kwargs["text"] and "-10 RP" in edit.kwargs["text"]
     game_handler.db.get_private_message_user_ids.assert_awaited_once()
-    bot.send_message.assert_awaited_once_with(7007, edit.kwargs["text"])
+    private_message = bot.send_message.await_args
+    assert private_message.args[0] == 7007
+    assert "Global reytingingiz: <b>1025 RP</b>" in private_message.args[1]
+    assert "/global buyrug'ini bosing" in private_message.args[1]
+    button = private_message.kwargs["reply_markup"].inline_keyboard[0][0]
+    assert button.callback_data == "show_global_rating"

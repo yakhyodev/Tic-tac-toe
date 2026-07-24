@@ -7,7 +7,7 @@ Aiogram 3, aiohttp va PostgreSQL asosidagi Classic/Battle Tic-Tac-Toe bot.
 - 2 kishilik 3×3 Classic va 3 kishilik 5×5 Battle
 - Shaxsiy matchmaking, guruh o'yinlari va robotlar
 - Bot a'zo bo'lmagan chatlarda `@bot_username` orqali inline Classic/Battle o'yinlari
-- Botni `/start` qilgan inline o'yinchilarga yakuniy natija, pul mukofoti va RP o'zgarishi private chatda yuboriladi
+- Botni `/start` qilgan inline o'yinchilarga yakuniy natija, pul mukofoti, RP o'zgarishi va joriy global reyting private chatda `/global` tugmasi bilan yuboriladi
 - Guruh o'yiniga private-chat deep-link orqali xavfsiz qo'shilish va aynan o'yin xabariga qaytish
 - Guruhdagi `/top` uchun faqat shu guruh o'yinlaridan hisoblanadigan alohida reyting (`/global` — umumiy reyting)
 - 45 soniyalik taymaut, `/cancel` va kutilayotgan o'yin TTL'i

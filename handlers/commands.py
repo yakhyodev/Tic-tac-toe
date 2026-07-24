@@ -259,6 +259,15 @@ async def cmd_global(message: types.Message) -> None:
     await _send_global_rating(message)
 
 
+@router.callback_query(F.data == "show_global_rating")
+async def cb_global_rating(call: types.CallbackQuery) -> None:
+    if not call.message:
+        await call.answer("Reyting xabarini ochib bo'lmadi.", show_alert=True)
+        return
+    await call.answer()
+    await _send_global_rating(call.message)
+
+
 @router.message(Command("top"))
 async def cmd_top(message: types.Message) -> None:
     if message.chat.type not in {"group", "supergroup"}:
